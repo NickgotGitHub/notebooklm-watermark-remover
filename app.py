@@ -197,17 +197,19 @@ def encode_frames_and_mux(frames_dir: str, fps: float, source_with_audio: str, o
         '-map', '0:v:0', '-map', '1:a:0?',
         '-filter:v', scale_filter,
         '-c:v', 'libx264', '-preset', preset,
+    ]
+    if qp is not None:
+        cmd += ['-qp', qp]
+    else:
+        cmd += ['-crf', crf]
+
+    cmd += [
         '-pix_fmt', 'yuv420p',
         '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
         '-movflags', '+faststart',
         '-c:a', 'aac', '-b:a', '192k',
         output_path
     ]
-    if qp is not None:
-        cmd[cmd.index('-pix_fmt')] = '-qp'
-        cmd[cmd.index('-qp') + 1:cmd.index('-qp') + 1] = [qp, '-pix_fmt']
-    else:
-        cmd[cmd.index('-c:v') + 4:cmd.index('-c:v') + 4] = ['-crf', crf]
 
     run_ffmpeg(cmd)
 
@@ -216,7 +218,17 @@ def run_ffmpeg(cmd: list) -> None:
     env = os.environ.copy()
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {proc.stderr[:800]}")
+        # Log full context server-side for diagnostics
+        app.logger.error(
+            "FFmpeg failed (exit %s)\ncmd: %s\nstdout:\n%s\nstderr:\n%s",
+            proc.returncode,
+            " ".join(cmd),
+            proc.stdout,
+            proc.stderr,
+        )
+        # Return a trimmed but informative error to the client
+        err_snippet = proc.stderr[:1600] if proc.stderr else "no stderr"
+        raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}). {err_snippet}")
 
 
 if __name__ == '__main__':
