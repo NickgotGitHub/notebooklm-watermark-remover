@@ -1,4 +1,4 @@
-#!/Users/gokul/Projects/watermark-remover/.venv/bin/python3
+#!/Users/nicholassalmon/git_clones/video-watermark-remover/.venv/bin/python3
 import sys
 from libpasteurize.main import main
 if __name__ == '__main__':
