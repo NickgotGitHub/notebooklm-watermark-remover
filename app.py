@@ -166,15 +166,14 @@ def probe_resolution(path: str):
 
 
 def build_scale_filter(src_w: int, src_h: int) -> str:
-    if src_h >= 2160:
-        return 'scale=iw:ih:flags=lanczos'
-    if src_h >= 1080:
-        return 'scale=iw:ih:flags=lanczos'
-    target_h = 1080
-    target_w = int(round(src_w * (target_h / src_h)))
-    if target_w % 2 == 1:
-        target_w += 1
-    return f'scale={target_w}:{target_h}:flags=lanczos'
+    # Never upscale; downscale large sources to 1080p max for speed/footprint.
+    if src_h > 1080:
+        target_h = 1080
+        target_w = int(round(src_w * (target_h / src_h)))
+        if target_w % 2 == 1:
+            target_w += 1
+        return f'scale={target_w}:{target_h}:flags=lanczos'
+    return 'scale=iw:ih:flags=lanczos'
 
 
 def encode_frames_and_mux(frames_dir: str, fps: float, source_with_audio: str, output_path: str, quality: str, scale_filter: str) -> None:
@@ -192,6 +191,8 @@ def encode_frames_and_mux(frames_dir: str, fps: float, source_with_audio: str, o
 
     cmd = [
         'ffmpeg', '-y',
+        # Limit global threads to avoid OOM on small containers
+        '-threads', os.environ.get('FFMPEG_THREADS', '2'),
         '-framerate', str(fps), '-i', pattern,
         '-i', source_with_audio,
         '-map', '0:v:0', '-map', '1:a:0?',
