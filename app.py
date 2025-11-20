@@ -1,8 +1,9 @@
-import os
-import uuid
-import subprocess
 import json
+import logging
+import os
 import shutil
+import subprocess
+import uuid
 
 from flask import Flask, render_template, request, send_from_directory, jsonify
 from werkzeug.utils import secure_filename
@@ -11,9 +12,14 @@ from utils.video import remove_watermark_roi_to_frames
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Vercel (and many serverless platforms) only allow writing to /tmp.
-# Prefer /tmp when running on Vercel, otherwise keep files next to the app for local dev.
-DATA_ROOT = os.environ.get('TMPDIR', '/tmp') if os.environ.get('VERCEL') else APP_ROOT
+# Resolve data root:
+# 1) honor explicit DATA_ROOT (recommended: /app/data volume on Railway)
+# 2) fall back to TMPDIR when present (serverless/ephemeral)
+# 3) default to app directory for local dev
+DATA_ROOT = (
+    os.environ.get('DATA_ROOT')
+    or (os.environ.get('TMPDIR', '/tmp') if os.environ.get('VERCEL') else APP_ROOT)
+)
 
 UPLOAD_FOLDER = os.path.join(DATA_ROOT, 'uploads')
 OUTPUT_FOLDER = os.path.join(DATA_ROOT, 'outputs')
@@ -24,8 +30,19 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
+logging.basicConfig(level=os.environ.get('LOG_LEVEL', 'INFO'))
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB
+
+app.logger.info(
+    "App startup: DATA_ROOT=%s (uploads=%s, outputs=%s, temp=%s) PORT=%s",
+    DATA_ROOT,
+    UPLOAD_FOLDER,
+    OUTPUT_FOLDER,
+    TEMP_FOLDER,
+    os.environ.get('PORT'),
+)
 
 
 def is_allowed(filename: str) -> bool:
