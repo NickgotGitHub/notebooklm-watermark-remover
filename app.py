@@ -128,6 +128,11 @@ def serve_output_video(filename):
     return send_from_directory(OUTPUT_FOLDER, filename, as_attachment=False)
 
 
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok'}), 200
+
+
 def probe_resolution(path: str):
     cmd = [
         'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', path

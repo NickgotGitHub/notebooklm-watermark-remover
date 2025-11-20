@@ -25,12 +25,14 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p uploads outputs temp
 
-# Expose port
-EXPOSE 5000
+# Expose the default port (Railway sets PORT; default to 8080)
+EXPOSE 8080
 
 # Set environment variables
 ENV FLASK_APP=app.py
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
-# Run the application with Gunicorn (reads PORT if provided)
-CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT:-5000} app:app"]
+# Run the application with a single worker to keep memory low on small dynos.
+# Access/error logs go to stdout/stderr for easier debugging.
+CMD ["sh", "-c", "gunicorn --workers 1 --threads 4 --timeout 120 --access-logfile - --error-logfile - -b 0.0.0.0:${PORT:-8080} app:app"]
