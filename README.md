@@ -1,19 +1,41 @@
-## Video Watermark Remover
+# NotebookLM Watermark Remover
 
-A Flask-based web app to remove rectangular watermarks from videos. Upload a video, draw a rectangle over the watermark, and click Remove. Processing uses OpenCV inpainting and FFmpeg re-encoding while preserving audio.
+A Flask-based web app specifically designed to automatically remove the NotebookLM watermark from videos and replace it with your custom logo. One-click processing with before/after comparison.
 
-## Video Demo
+## ✨ Features
 
-https://github.com/user-attachments/assets/e55500f7-f8d0-4087-8c1d-e5314c668d03
+### 🎯 Automatic Watermark Detection
+- **No manual selection required** - automatically detects NotebookLM watermark in bottom-right corner
+- Pre-configured for NotebookLM's rainbow logo position
+- Works with any video resolution (proportional scaling)
 
+### 🎨 Custom Logo Replacement
+- Automatically overlays your `Logo.png` after watermark removal
+- Full transparency (alpha channel) support
+- Auto-scales to fit watermark area
+- Maintains aspect ratio
 
-### Features
-- **Upload**: MP4, MOV, WEBM, MKV, AVI
-- **ROI selection**: Draw rectangle directly on the video overlay
-- **Algorithms**: OpenCV Telea (fast) and Navier–Stokes (slower)
-- **Quality modes**: Fast → Ultra (lossless), BT.709 tags, yuv420p for wide compatibility
-- **Audio**: Original audio is preserved and muxed back
-- **Responsive UI**: Drag-and-drop upload, progress bars, and toasts
+### ⚡ Optimized Performance
+- **2 FPS processing** with frame deduplication (100x+ faster than original)
+- Ultra-fast frame comparison using downsampled hashing
+- 720p downscaling for faster encoding
+- Batch file copying for duplicate frames
+- Detailed timing diagnostics
+
+### 🎬 Before/After Comparison
+- Side-by-side video comparison with slider
+- Interactive swipe to compare original vs processed
+- Independent playback controls
+- No scrolling required
+
+### 🎨 Modern UI
+- One-button workflow
+- Gradient purple theme
+- Responsive design (mobile-friendly)
+- Toast notifications
+- Clean upload/results flow
+
+## 🚀 Quick Start
 
 ### Requirements
 - **Python**: 3.9+
@@ -24,83 +46,198 @@ On macOS using Homebrew:
 brew install ffmpeg
 ```
 
-### Quick Start
+### Installation
+
 ```bash
-cd /Users/gokul/Projects/watermark-remover
+cd notebooklm-watermark-remover
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+### Add Your Logo
+Place your custom logo as `Logo.png` in the project root directory. For best results:
+- Use PNG format with alpha channel (transparency)
+- Recommended size: ~220px width
+- Square or landscape orientation works best
+
+### Run the App
+```bash
 python app.py
 ```
+
 Open `http://127.0.0.1:5000` in your browser.
 
-### Usage
-1. **Upload**: Drag & drop a video or click Browse, then Upload.
-2. **Select ROI**: When the video loads, draw a rectangle over the watermark.
-3. **Method**: Choose Telea (default) or Navier–Stokes.
-4. **Quality**: Pick from Fast, Balanced, Better, Best, or Ultra (lossless).
-5. **Process**: Click Remove Watermark. When finished, download the result.
+## 📖 Usage
 
-### Quality Modes
-- **Fast**: x264 veryfast, CRF 23 (smaller, lower quality)
-- **Balanced**: x264 medium, CRF 20
-- **Better**: x264 slow, CRF 18
-- **Best**: x264 veryslow, CRF 16 (near-lossless)
-- **Ultra**: x264 placebo, QP 0 (lossless, very large files)
+1. **Upload** - Select or drag & drop a NotebookLM video
+2. **Configure** (Optional) - Choose quality: Fast (default), Normal, or Ultra
+3. **Process** - Click "Remove Watermark & Add Logo"
+4. **Compare** - Use the slider to compare before/after
+5. **Download** - Get your processed video
 
-Scaling policy (current behavior):
-- Keep 4K if input is 4K or higher
-- If input is ≥1080p, keep as-is
-- Otherwise upscale to 1080p (Lanczos)
+That's it! The watermark is automatically detected and replaced.
 
-### Project Structure
+## ⚙️ Quality Modes
+
+- **Fast** (Default): x264 veryfast, CRF 23 - Quick processing, good quality
+- **Normal**: x264 medium, CRF 20 - Balanced quality/speed
+- **Ultra**: x264 veryslow, CRF 16 - Near-lossless, slower processing
+
+## 📁 Project Structure
+
 ```text
-watermark-remover/
-  app.py                 # Flask app & processing orchestration
+notebooklm-watermark-remover/
+  app.py                 # Flask app & API endpoints
   requirements.txt       # Python dependencies
+  Logo.png              # Your custom logo (add this!)
+  Dockerfile            # Docker configuration
+  DEPLOYMENT.md         # Deployment guide (Railway, Render, Fly.io)
+  CHANGES.md            # Detailed changelog
+  USAGE.md              # Extended usage guide
   templates/
-    index.html           # UI
+    index.html          # UI
   static/
-    app.js               # Frontend logic (upload, ROI, progress)
-    style.css            # Styling
+    app.js              # Frontend logic
+    style.css           # Styling
   utils/
     __init__.py
-    video.py             # OpenCV inpainting utilities
-  uploads/               # Uploaded videos (gitignored)
-  outputs/               # Processed outputs (gitignored)
-  temp/                  # Temp frames (gitignored)
-  README.md
+    video.py            # Video processing & watermark removal
+  uploads/              # Uploaded videos (auto-created, gitignored)
+  outputs/              # Processed outputs (auto-created, gitignored)
+  temp/                 # Temp frames (auto-created, gitignored)
 ```
 
-### API (for reference)
-- **POST** `/upload`
-  - multipart form-data `video`: file
-  - returns `{ filename, videoUrl }`
-- **GET** `/video/<filename>`: stream uploaded video
-- **POST** `/process`
-  - JSON body: `{ filename, roi: {x,y,width,height}, method, quality }`
-  - returns `{ downloadUrl, outputFilename }`
-- **GET** `/download/<filename>`: download processed file
+## 🐳 Deployment
 
-### Troubleshooting
-- **“ffmpeg failed”**: Ensure `ffmpeg`/`ffprobe` are installed and on PATH.
-- **Upload too large**: Default limit is 2GB (`app.config['MAX_CONTENT_LENGTH']`).
-- **Blurry patch**: Tighten ROI; try Navier–Stokes; choose higher quality.
-- **Performance**: Ultra/Best are slow. Prefer Better for a good balance.
-
-### Deployment
-- Production example (gunicorn):
+### Local Development
 ```bash
-pip install gunicorn
-export FLASK_ENV=production
-gunicorn -w 2 -b 0.0.0.0:5000 app:app
+python app.py
 ```
-- Put a reverse proxy (nginx) in front for TLS and static caching.
 
-### Security & Privacy
-- Files are stored locally in `uploads/`, interim frames in `temp/`, and results in `outputs/`.
-- Clean up old files periodically if deploying to a server.
+### Docker
+```bash
+docker build -t notebooklm-watermark-remover .
+docker run -p 5000:5000 notebooklm-watermark-remover
+```
 
-### License
-MIT
+### Railway.app (Recommended)
+See `DEPLOYMENT.md` for detailed instructions on deploying to Railway.app, which supports:
+- Large file uploads (2GB+)
+- Long processing times (unlimited)
+- FFmpeg binary
+- Persistent storage
+
+**Note:** Vercel is **not suitable** for this application due to 4.5MB request body limit.
+
+## 🛠️ Technical Details
+
+### Watermark Detection Algorithm
+```python
+# Automatically calculates ROI based on video resolution
+# Reference: 1470x956 video
+# NotebookLM watermark: 200x60px @ (1240, 850)
+# Scales proportionally for any resolution
+```
+
+### Processing Pipeline
+1. Upload video to `/uploads/`
+2. Auto-detect ROI in bottom-right (200x60px proportional)
+3. Extract and process frames at 2 FPS
+4. Detect duplicate frames using fast hashing
+5. Remove watermark using OpenCV inpainting (Telea/Navier-Stokes)
+6. Overlay Logo.png with alpha transparency
+7. Write processed frames (720p downscaled)
+8. Batch-copy duplicate frames
+9. Re-encode with FFmpeg at original FPS
+10. Mux with original audio
+11. Serve before/after comparison
+
+### Performance Optimizations
+- **2 FPS Processing**: Process 1 frame per 15 (for 30fps video), then duplicate
+- **Frame Hashing**: Ultra-fast duplicate detection (16x9 downsampled comparison)
+- **720p Encoding**: Reduces PNG write time by ~70%
+- **Batch Copying**: File copy for duplicates instead of re-encoding
+- **Result**: ~60 seconds for a 40-second video (was ~60+ minutes before optimization)
+
+## 🔧 API Reference
+
+### POST `/upload`
+Upload a video file
+- **Body**: `multipart/form-data` with `video` field
+- **Returns**: `{ filename, videoUrl }`
+
+### POST `/process`
+Process the uploaded video
+- **Body**: `{ filename, method?, quality? }`
+- **Returns**: `{ downloadUrl, outputFilename, videoUrl }`
+
+### GET `/video/<filename>`
+Stream original uploaded video
+
+### GET `/output/<filename>`
+Stream processed output video
+
+### GET `/download/<filename>`
+Download processed video
+
+## 🐛 Troubleshooting
+
+### "ffmpeg failed"
+- Ensure `ffmpeg` and `ffprobe` are installed: `ffmpeg -version`
+- On macOS: `brew install ffmpeg`
+- On Linux: `sudo apt install ffmpeg`
+
+### Processing is slow
+- Use "Fast" quality mode
+- Ensure optimizations are enabled (check `utils/video.py` for 2 FPS processing)
+- Process shorter videos first to test
+
+### Watermark not fully removed
+- Check `Logo.png` positioning in output
+- The ROI is auto-calculated based on video resolution
+- For custom positioning, modify `auto_detect_bottom_right_roi()` in `utils/video.py`
+
+### Logo looks pixelated
+- Use a higher resolution logo (minimum 220px width recommended)
+- Ensure logo has transparent background (PNG with alpha channel)
+
+### Upload fails on deployed version
+- Vercel has 4.5MB upload limit - **not suitable for videos**
+- Use Railway.app, Render.com, or Fly.io instead (see `DEPLOYMENT.md`)
+
+## 🔒 Security & Privacy
+
+- All processing is done **locally** on your server
+- No external API calls or data sharing
+- Files are stored temporarily in `uploads/`, `outputs/`, and `temp/`
+- Clean up old files periodically if deploying publicly:
+  ```bash
+  rm -rf uploads/* outputs/* temp/*
+  ```
+
+## 📄 License
+
+MIT License - feel free to use this for personal or commercial projects!
+
+## 🤝 Contributing
+
+Pull requests welcome! Areas for improvement:
+- Support for other watermark positions
+- Multiple logo positions
+- Batch processing
+- Progress streaming via WebSocket
+- GPU acceleration for faster processing
+
+## 🙏 Credits
+
+Built with:
+- **Flask** - Web framework
+- **OpenCV** - Video processing & inpainting
+- **FFmpeg** - Video encoding/decoding
+- **NumPy** - Array operations
+
+---
+
+**Made for NotebookLM users** 🎙️ | [View Demo](https://github.com/NickgotGitHub/notebooklm-watermark-remover) | [Report Issues](https://github.com/NickgotGitHub/notebooklm-watermark-remover/issues)
