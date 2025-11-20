@@ -11,6 +11,7 @@ from werkzeug.utils import secure_filename
 from utils.video import remove_watermark_roi_to_frames
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+OUTRO_PATH = os.path.join(APP_ROOT, 'public', 'intellibus-outro.mp4')
 
 # Resolve data root:
 # 1) honor explicit DATA_ROOT (recommended: /app/data volume on Railway)
@@ -103,9 +104,10 @@ def process():
         return jsonify({'error': 'File not found'}), 404
 
     output_basename = f"processed_{uuid.uuid4().hex}.mp4"
+    final_output_path = os.path.join(OUTPUT_FOLDER, output_basename)
+    interim_output_path = os.path.join(OUTPUT_FOLDER, f"processed_{uuid.uuid4().hex}_main.mp4")
     frames_dir = os.path.join(TEMP_FOLDER, f"frames_{uuid.uuid4().hex}")
-    output_path = os.path.join(OUTPUT_FOLDER, output_basename)
-    
+
     # Logo path for replacement watermark
     logo_path = os.path.join(APP_ROOT, 'Logo.png')
 
@@ -122,7 +124,10 @@ def process():
         # Use the output dimensions from processing (may be downscaled)
         scale_filter = build_scale_filter(width, height)
 
-        encode_frames_and_mux(frames_dir, fps, input_path, output_path, quality, scale_filter)
+        encode_frames_and_mux(frames_dir, fps, input_path, interim_output_path, quality, scale_filter)
+
+        # Trim last 4s and append outro clip
+        append_outro(interim_output_path, final_output_path, width, height, outro_path=OUTRO_PATH, trim_seconds=4.0)
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
@@ -130,6 +135,12 @@ def process():
         try:
             if os.path.isdir(frames_dir):
                 shutil.rmtree(frames_dir)
+        except Exception:
+            pass
+        # Cleanup interim if still present
+        try:
+            if os.path.exists(interim_output_path):
+                os.remove(interim_output_path)
         except Exception:
             pass
 
@@ -148,6 +159,22 @@ def serve_output_video(filename):
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok'}), 200
+
+
+def probe_duration_seconds(path: str) -> float:
+    cmd = [
+        'ffprobe', '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        path
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        return 0.0
+    try:
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0.0
 
 
 def probe_resolution(path: str):
@@ -210,6 +237,42 @@ def encode_frames_and_mux(frames_dir: str, fps: float, source_with_audio: str, o
         '-movflags', '+faststart',
         '-c:a', 'aac', '-b:a', '192k',
         output_path
+    ]
+
+    run_ffmpeg(cmd)
+
+
+def append_outro(main_video_path: str, final_output_path: str, target_w: int, target_h: int, outro_path: str, trim_seconds: float = 4.0) -> None:
+    """Trim the last `trim_seconds` from main_video_path and append outro_path."""
+    if not os.path.exists(outro_path):
+        shutil.move(main_video_path, final_output_path)
+        return
+
+    duration = probe_duration_seconds(main_video_path)
+    if duration <= trim_seconds + 0.1:
+        shutil.move(main_video_path, final_output_path)
+        return
+
+    keep_duration = max(duration - trim_seconds, 0.1)
+    filter_complex = (
+        f"[0:v]trim=0:{keep_duration},setpts=PTS-STARTPTS[v0];"
+        f"[0:a]atrim=0:{keep_duration},asetpts=PTS-STARTPTS[a0];"
+        f"[1:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+        f"pad={target_w}:{target_h},setsar=1[v1];"
+        f"[1:a]aresample=async=1[a1];"
+        f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
+    )
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', main_video_path,
+        '-i', outro_path,
+        '-filter_complex', filter_complex,
+        '-map', '[outv]', '-map', '[outa]',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart',
+        final_output_path
     ]
 
     run_ffmpeg(cmd)
