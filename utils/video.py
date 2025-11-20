@@ -4,6 +4,8 @@ from typing import Tuple, Optional
 import os
 import time
 import shutil
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
 
 
 def auto_detect_bottom_right_roi(width: int, height: int) -> Tuple[int, int, int, int]:
@@ -136,16 +138,48 @@ def remove_watermark_roi(input_video_path: str, output_video_path: str, roi: Tup
     out.release()
 
 
+def _process_single_frame(args):
+    """Worker function to process a single frame (for multiprocessing).
+    
+    Args:
+        args: Tuple of (frame_data, roi, inpaint_method, logo_path, frame_idx)
+    
+    Returns:
+        Tuple of (frame_idx, processed_frame)
+    """
+    frame, roi, inpaint_method, logo_path, frame_idx = args
+    
+    height, width = frame.shape[:2]
+    x, y, w, h = roi
+    
+    # Create mask
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[y:y+h, x:x+w] = 255
+    
+    # Inpaint
+    flags = cv2.INPAINT_TELEA if inpaint_method.lower() == 'telea' else cv2.INPAINT_NS
+    inpainted = cv2.inpaint(frame, mask, 3, flags)
+    
+    # Overlay logo if provided
+    if logo_path and os.path.exists(logo_path):
+        inpainted = overlay_logo(inpainted, logo_path, (x, y, w, h))
+    
+    return (frame_idx, inpainted)
+
+
 def remove_watermark_roi_to_frames(
     input_video_path: str, 
     output_frames_dir: str, 
     roi: Optional[Tuple[int, int, int, int]] = None, 
     inpaint_method: str = 'telea',
-    logo_path: Optional[str] = None
+    logo_path: Optional[str] = None,
+    use_multiprocessing: bool = True,
+    num_workers: Optional[int] = None
 ) -> Tuple[float, int, int]:
     """Remove watermark and write lossless PNG frames to a directory.
     Optimized for still-frame videos by detecting and reusing duplicate frames.
     Maintains original FPS and duration for perfect audio sync.
+    Uses multiprocessing to parallelize frame processing across CPU cores.
     
     Args:
         input_video_path: Path to input video
@@ -153,6 +187,8 @@ def remove_watermark_roi_to_frames(
         roi: ROI (x, y, w, h) for watermark. If None, auto-detects bottom right.
         inpaint_method: 'telea' or 'ns' for inpainting
         logo_path: Optional path to logo to overlay after watermark removal
+        use_multiprocessing: Enable parallel processing (default: True)
+        num_workers: Number of worker processes. If None, uses CPU count - 1.
         
     Returns:
         Tuple of (fps, output_width, output_height) for proper encoding.
@@ -203,152 +239,200 @@ def remove_watermark_roi_to_frames(
     w = max(1, min(w, width - x))
     h = max(1, min(h, height - y))
 
-    flags = cv2.INPAINT_TELEA if inpaint_method.lower() == 'telea' else cv2.INPAINT_NS
-
-    # Optimization for still frames: track previous frame and reuse processed result
-    prev_frame_hash = None
-    prev_processed_frame = None
-    frames_skipped = 0
-    frames_processed = 0
-    frames_duplicated = 0
+    # Determine number of workers for multiprocessing
+    if num_workers is None:
+        num_workers = max(1, cpu_count() - 1)  # Leave one core for system
     
+    if use_multiprocessing:
+        print(f"Multiprocessing: Enabled with {num_workers} worker processes", flush=True)
+    else:
+        print(f"Multiprocessing: Disabled (sequential processing)", flush=True)
+
     # Timing trackers
     time_reading = 0
     time_comparison = 0
-    time_mask_creation = 0
-    time_inpainting = 0
-    time_logo_overlay = 0
+    time_processing = 0  # Includes mask, inpainting, logo
     time_writing_encode = 0  # PNG encoding time
     time_writing_copy = 0    # File copy time
     time_total_start = time.time()
     
+    # Step 1: Read all frames to process and compute hashes
+    print("Step 1: Reading frames and detecting duplicates...", flush=True)
+    t_read_start = time.time()
+    
+    frames_to_process = []  # List of (input_idx, frame, hash, output_batch_start)
+    frame_hash_map = {}  # hash -> first occurrence index
     input_frame_idx = 0
     output_idx = 0
     
     while True:
-        # Time: Frame reading
-        t_start = time.time()
         ret, frame = cap.read()
         if not ret:
             break
-        time_reading += time.time() - t_start
         
         # Only process every Nth frame (2 FPS processing)
         if input_frame_idx % frame_skip == 0:
-            # Time: Frame comparison
-            t_start = time.time()
+            # Compute frame hash for deduplication
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame_tiny = cv2.resize(frame_gray, (16, 9), interpolation=cv2.INTER_NEAREST)
             frame_hash = (frame_tiny.mean(), frame_tiny.std(), frame_tiny[0,0], frame_tiny[8,8], frame_tiny[4,4])
-            time_comparison += time.time() - t_start
             
-            # Check if frame is identical to previous frame
-            if prev_frame_hash is not None and frame_hash == prev_frame_hash and prev_processed_frame is not None:
-                # Reuse previous processed frame - no need to inpaint again!
-                inpainted = prev_processed_frame
-                frames_skipped += 1
-            else:
-                # Different frame - process it
-                # Time: Mask creation
-                t_start = time.time()
-                mask = np.zeros((height, width), dtype=np.uint8)
-                mask[y:y+h, x:x+w] = 255
-                time_mask_creation += time.time() - t_start
-                
-                # Time: Inpainting (watermark removal)
-                t_start = time.time()
-                inpainted = cv2.inpaint(frame, mask, 3, flags)
-                time_inpainting += time.time() - t_start
-                
-                # Time: Logo overlay
-                if logo_path and os.path.exists(logo_path):
-                    t_start = time.time()
-                    inpainted = overlay_logo(inpainted, logo_path, (x, y, w, h))
-                    time_logo_overlay += time.time() - t_start
-                
-                # Cache for next iteration
-                prev_frame_hash = frame_hash
-                prev_processed_frame = inpainted.copy()
-                frames_processed += 1
+            # Check if we've seen this frame before
+            if frame_hash not in frame_hash_map:
+                # New unique frame - need to process it
+                frame_hash_map[frame_hash] = len(frames_to_process)
+                frames_to_process.append((input_frame_idx, frame.copy(), frame_hash, output_idx))
             
-            # Downscale before writing if needed (much faster PNG compression)
-            if output_width != width or output_height != height:
-                inpainted_resized = cv2.resize(inpainted, (output_width, output_height), interpolation=cv2.INTER_AREA)
-            else:
-                inpainted_resized = inpainted
-            
-            # Write this processed frame multiple times to maintain original FPS
-            # Optimization: Write first frame with PNG encoding, then just copy the file for duplicates
-            
-            # Write the first frame (PNG encoding required)
-            t_encode = time.time()
-            first_frame_path = os.path.join(output_frames_dir, f"frame_{output_idx:06d}.png")
-            ok = cv2.imwrite(first_frame_path, inpainted_resized)
-            if not ok:
-                cap.release()
-                raise RuntimeError(f'Failed to write frame {first_frame_path}')
-            time_writing_encode += time.time() - t_encode
-            output_idx += 1
-            
-            # For duplicate frames, just copy the file (much faster than re-encoding!)
-            t_copy = time.time()
-            for dup in range(1, frame_skip):
-                duplicate_path = os.path.join(output_frames_dir, f"frame_{output_idx:06d}.png")
-                shutil.copy2(first_frame_path, duplicate_path)
-                output_idx += 1
-                frames_duplicated += 1
-            time_writing_copy += time.time() - t_copy
-            
-            # Progress indicator every 30 output frames
-            if output_idx % 90 == 0:
-                elapsed = time.time() - time_total_start
-                fps_current = output_idx / elapsed if elapsed > 0 else 0
-                print(f"Progress: {output_idx} frames written ({input_frame_idx} read, {frames_processed} processed) in {elapsed:.1f}s ({fps_current:.1f} fps)", flush=True)
+            output_idx += frame_skip  # Account for duplicates we'll create later
         
         input_frame_idx += 1
-
+    
     cap.release()
+    time_reading = time.time() - t_read_start
+    
+    total_input_frames = input_frame_idx
+    total_output_frames = output_idx
+    unique_frames = len(frames_to_process)
+    duplicate_frames = (total_input_frames // frame_skip) - unique_frames
+    
+    print(f"Read {total_input_frames} input frames in {time_reading:.2f}s", flush=True)
+    print(f"Found {unique_frames} unique frames to process ({duplicate_frames} duplicates skipped)", flush=True)
+    print(f"Will output {total_output_frames} frames total", flush=True)
+    
+    # Step 2: Process unique frames (with or without multiprocessing)
+    print("\nStep 2: Processing unique frames...", flush=True)
+    t_process_start = time.time()
+    
+    processed_frames = {}  # frame_idx -> processed_frame
+    
+    if use_multiprocessing and unique_frames > 1:
+        # Prepare arguments for worker processes
+        process_args = [
+            (frame, roi, inpaint_method, logo_path, idx)
+            for idx, frame, _, _ in frames_to_process
+        ]
+        
+        # Process frames in parallel
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_process_single_frame, args): args[4] for args in process_args}
+            
+            completed = 0
+            for future in as_completed(futures):
+                frame_idx, processed_frame = future.result()
+                processed_frames[frame_idx] = processed_frame
+                completed += 1
+                
+                if completed % 10 == 0 or completed == unique_frames:
+                    print(f"  Processed {completed}/{unique_frames} unique frames", flush=True)
+    else:
+        # Sequential processing (fallback or single frame)
+        flags = cv2.INPAINT_TELEA if inpaint_method.lower() == 'telea' else cv2.INPAINT_NS
+        for i, (idx, frame, _, _) in enumerate(frames_to_process):
+            mask = np.zeros((height, width), dtype=np.uint8)
+            mask[y:y+h, x:x+w] = 255
+            inpainted = cv2.inpaint(frame, mask, 3, flags)
+            
+            if logo_path and os.path.exists(logo_path):
+                inpainted = overlay_logo(inpainted, logo_path, (x, y, w, h))
+            
+            processed_frames[idx] = inpainted
+            
+            if (i + 1) % 10 == 0 or (i + 1) == unique_frames:
+                print(f"  Processed {i + 1}/{unique_frames} unique frames", flush=True)
+    
+    time_processing = time.time() - t_process_start
+    print(f"Processing completed in {time_processing:.2f}s ({unique_frames/time_processing:.2f} frames/sec)", flush=True)
+    
+    # Step 3: Write all output frames in order
+    print("\nStep 3: Writing output frames...", flush=True)
+    t_write_start = time.time()
+    
+    output_idx = 0
+    frames_duplicated = 0
+    
+    # Map input indices to output batches
+    input_to_output = {}  # input_idx -> (first_output_idx, count)
+    for input_idx, _, frame_hash, output_batch_start in frames_to_process:
+        first_idx = frame_hash_map[frame_hash]
+        if first_idx != len([x for x in frames_to_process if frames_to_process.index(x) < frames_to_process.index((input_idx, _, frame_hash, output_batch_start))]):
+            # This is a duplicate - map to the first occurrence
+            first_input_idx = frames_to_process[first_idx][0]
+            input_to_output[input_idx] = input_to_output[first_input_idx]
+        else:
+            # This is the first occurrence
+            input_to_output[input_idx] = (output_batch_start, frame_skip)
+    
+    # Write frames in output order
+    for input_idx, _, _, output_batch_start in frames_to_process:
+        processed_frame = processed_frames[input_idx]
+        
+        # Downscale if needed
+        if output_width != width or output_height != height:
+            processed_frame = cv2.resize(processed_frame, (output_width, output_height), interpolation=cv2.INTER_AREA)
+        
+        # Write first frame
+        t_encode = time.time()
+        first_frame_path = os.path.join(output_frames_dir, f"frame_{output_batch_start:06d}.png")
+        ok = cv2.imwrite(first_frame_path, processed_frame)
+        if not ok:
+            raise RuntimeError(f'Failed to write frame {first_frame_path}')
+        time_writing_encode += time.time() - t_encode
+        
+        # Copy for duplicates to maintain FPS
+        t_copy = time.time()
+        for dup in range(1, frame_skip):
+            duplicate_path = os.path.join(output_frames_dir, f"frame_{output_batch_start + dup:06d}.png")
+            shutil.copy2(first_frame_path, duplicate_path)
+            frames_duplicated += 1
+        time_writing_copy += time.time() - t_copy
+        
+        output_idx += frame_skip
+        
+        if output_idx % 90 == 0:
+            print(f"  Written {output_idx}/{total_output_frames} output frames", flush=True)
+    
+    time_writing = time.time() - t_write_start
+    print(f"Writing completed in {time_writing:.2f}s", flush=True)
+    
     time_total = time.time() - time_total_start
+    
+    frames_processed = unique_frames
+    frames_skipped = duplicate_frames
     
     # Print detailed timing breakdown with flush to ensure it appears in logs
     print("\n" + "="*60, flush=True)
     print("DETAILED TIMING BREAKDOWN", flush=True)
     print("="*60, flush=True)
-    print(f"Input frames read: {input_frame_idx}", flush=True)
-    print(f"Output frames written: {output_idx}", flush=True)
-    print(f"Actual frames processed: {frames_processed}", flush=True)
+    print(f"Input frames read: {total_input_frames}", flush=True)
+    print(f"Output frames written: {total_output_frames}", flush=True)
+    print(f"Unique frames processed: {frames_processed}", flush=True)
     print(f"Duplicate frames reused: {frames_skipped}", flush=True)
     print(f"Frames duplicated (2 FPS): {frames_duplicated}", flush=True)
     if frames_processed > 0:
-        reduction = ((input_frame_idx - frames_processed) / input_frame_idx * 100) if input_frame_idx > 0 else 0
-        print(f"Processing reduction: {reduction:.1f}% (only processed {frames_processed}/{input_frame_idx} frames)", flush=True)
+        reduction = ((total_input_frames // frame_skip - frames_processed) / (total_input_frames // frame_skip) * 100) if total_input_frames > 0 else 0
+        print(f"Processing reduction: {reduction:.1f}% (only processed {frames_processed}/{total_input_frames // frame_skip} candidate frames)", flush=True)
     print(flush=True)
-    print(f"{'Operation':<25} {'Time (s)':<12} {'% of Total':<12} {'Per Frame (ms)':<15}", flush=True)
+    print(f"{'Operation':<25} {'Time (s)':<12} {'% of Total':<12} {'Throughput':<15}", flush=True)
     print("-"*60, flush=True)
-    
-    time_writing_total = time_writing_encode + time_writing_copy
-    frames_encoded = frames_processed + frames_skipped
     
     operations = [
-        ("Frame Reading", time_reading, input_frame_idx),
-        ("Frame Comparison", time_comparison, frames_processed + frames_skipped),
-        ("Mask Creation", time_mask_creation, frames_processed),
-        ("Inpainting (removal)", time_inpainting, frames_processed),
-        ("Logo Overlay", time_logo_overlay, frames_processed),
-        ("PNG Encoding", time_writing_encode, frames_encoded),
-        ("File Copying (dupes)", time_writing_copy, frames_duplicated),
+        ("Frame Reading", time_reading, f"{total_input_frames/time_reading:.1f} fps" if time_reading > 0 else "N/A"),
+        ("Frame Processing", time_processing, f"{frames_processed/time_processing:.1f} fps" if time_processing > 0 else "N/A"),
+        ("PNG Encoding", time_writing_encode, f"{unique_frames/time_writing_encode:.1f} fps" if time_writing_encode > 0 else "N/A"),
+        ("File Copying (dupes)", time_writing_copy, f"{frames_duplicated/time_writing_copy:.1f} fps" if time_writing_copy > 0 else "N/A"),
     ]
     
-    for op_name, op_time, op_count in operations:
+    for op_name, op_time, throughput in operations:
         pct = (op_time / time_total * 100) if time_total > 0 else 0
-        per_frame = (op_time / op_count * 1000) if op_count > 0 else 0
-        print(f"{op_name:<25} {op_time:<12.2f} {pct:<12.1f} {per_frame:<15.1f}", flush=True)
+        print(f"{op_name:<25} {op_time:<12.2f} {pct:<12.1f} {throughput:<15}", flush=True)
     
     print("-"*60, flush=True)
-    print(f"{'TOTAL TIME':<25} {time_total:<12.2f} {'100.0':<12} {(time_total/output_idx*1000):<15.1f}", flush=True)
+    print(f"{'TOTAL TIME':<25} {time_total:<12.2f} {'100.0':<12} {total_output_frames/time_total:.1f} fps", flush=True)
     print("="*60, flush=True)
-    print(f"\nProcessing speed: {output_idx/time_total:.2f} output frames/second", flush=True)
-    print(f"Effective speedup: {input_frame_idx/(frames_processed+frames_skipped):.1f}x (processed {frames_processed+frames_skipped} instead of {input_frame_idx})", flush=True)
+    if use_multiprocessing:
+        print(f"\nMultiprocessing: {num_workers} workers, {frames_processed/time_processing:.2f} frames/sec", flush=True)
+    print(f"Overall speed: {total_output_frames/time_total:.2f} output frames/second", flush=True)
+    print(f"Effective speedup: {(total_input_frames // frame_skip)/frames_processed:.1f}x via deduplication", flush=True)
     print(flush=True)
     
     return float(fps), output_width, output_height  # Return FPS and output dimensions
