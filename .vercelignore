@@ -1,0 +1,28 @@
+# Ignore large folders with videos and temporary files
+uploads/
+outputs/
+temp/
+
+# Ignore Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local development files
+app.log
+*.log
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Don't ignore these
+!static/
+!templates/
+!Logo.png
+

@@ -10,9 +10,14 @@ from werkzeug.utils import secure_filename
 from utils.video import remove_watermark_roi_to_frames
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(APP_ROOT, 'uploads')
-OUTPUT_FOLDER = os.path.join(APP_ROOT, 'outputs')
-TEMP_FOLDER = os.path.join(APP_ROOT, 'temp')
+
+# Vercel (and many serverless platforms) only allow writing to /tmp.
+# Prefer /tmp when running on Vercel, otherwise keep files next to the app for local dev.
+DATA_ROOT = os.environ.get('TMPDIR', '/tmp') if os.environ.get('VERCEL') else APP_ROOT
+
+UPLOAD_FOLDER = os.path.join(DATA_ROOT, 'uploads')
+OUTPUT_FOLDER = os.path.join(DATA_ROOT, 'outputs')
+TEMP_FOLDER = os.path.join(DATA_ROOT, 'temp')
 ALLOWED_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv'}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -70,12 +75,11 @@ def download_output(filename):
 def process():
     data = request.get_json(force=True)
     filename = data.get('filename')
-    roi = data.get('roi')
     method = data.get('method', 'telea')
     quality = data.get('quality', 'ultra')
 
-    if not filename or not roi:
-        return jsonify({'error': 'filename and roi are required'}), 400
+    if not filename:
+        return jsonify({'error': 'filename is required'}), 400
 
     input_path = os.path.join(UPLOAD_FOLDER, filename)
     if not os.path.exists(input_path):
@@ -84,16 +88,21 @@ def process():
     output_basename = f"processed_{uuid.uuid4().hex}.mp4"
     frames_dir = os.path.join(TEMP_FOLDER, f"frames_{uuid.uuid4().hex}")
     output_path = os.path.join(OUTPUT_FOLDER, output_basename)
+    
+    # Logo path for replacement watermark
+    logo_path = os.path.join(APP_ROOT, 'Logo.png')
 
     try:
-        fps = remove_watermark_roi_to_frames(
+        # Auto-detect ROI (None triggers auto-detection in the function)
+        fps, width, height = remove_watermark_roi_to_frames(
             input_video_path=input_path,
             output_frames_dir=frames_dir,
-            roi=(int(roi['x']), int(roi['y']), int(roi['width']), int(roi['height'])),
-            inpaint_method=method
+            roi=None,  # Auto-detect bottom right watermark
+            inpaint_method=method,
+            logo_path=logo_path if os.path.exists(logo_path) else None
         )
 
-        width, height = probe_resolution(input_path)
+        # Use the output dimensions from processing (may be downscaled)
         scale_filter = build_scale_filter(width, height)
 
         encode_frames_and_mux(frames_dir, fps, input_path, output_path, quality, scale_filter)
@@ -109,8 +118,14 @@ def process():
 
     return jsonify({
         'downloadUrl': f"/download/{output_basename}",
-        'outputFilename': output_basename
+        'outputFilename': output_basename,
+        'videoUrl': f"/output/{output_basename}"
     })
+
+
+@app.route('/output/<path:filename>')
+def serve_output_video(filename):
+    return send_from_directory(OUTPUT_FOLDER, filename, as_attachment=False)
 
 
 def probe_resolution(path: str):

@@ -33,3 +33,4 @@ cache/
 
 # Node (if any future tooling)
 node_modules/
+.vercel

@@ -1,37 +1,116 @@
 const dropzone = document.getElementById('dropzone');
 const browseBtn = document.getElementById('browseBtn');
 const fileInput = document.getElementById('fileInput');
-const uploadBtn = document.getElementById('uploadBtn');
 const uploadStatus = document.getElementById('uploadStatus');
 const uploadProgress = document.getElementById('uploadProgress');
 const uploadProgressBar = document.getElementById('uploadProgressBar');
 
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const overlayHelp = document.getElementById('overlayHelp');
-
 const methodSelect = document.getElementById('method');
 const qualitySelect = document.getElementById('quality');
-const clearRoiBtn = document.getElementById('clearRoi');
 const processBtn = document.getElementById('processBtn');
 const processStatus = document.getElementById('processStatus');
 const processProgress = document.getElementById('processProgress');
 const downloadLink = document.getElementById('downloadLink');
 const toasts = document.getElementById('toasts');
 
+const comparisonCard = document.getElementById('comparisonCard');
+const videoOriginal = document.getElementById('videoOriginal');
+const videoProcessed = document.getElementById('videoProcessed');
+const compareSlider = document.getElementById('compareSlider');
+const compareOverlay = document.getElementById('compareOverlay');
+const compareDivider = document.getElementById('compareDivider');
+const playToggle = document.getElementById('playToggle');
+const themeToggle = document.getElementById('themeToggle');
+const root = document.documentElement;
+
 let uploadedFilename = null;
-let isDrawing = false;
-let startX = 0, startY = 0;
-let roi = null; // {x, y, width, height}
+let originalVideoUrl = null;
+let isPlaying = false;
 
 // Toasts
-function toast(message, type = 'success', timeout = 2500) {
+function toast(message, type = 'success', timeout = 3000) {
   const t = document.createElement('div');
   t.className = `toast ${type}`;
   t.textContent = message;
   toasts.appendChild(t);
   setTimeout(() => { t.remove(); }, timeout);
 }
+
+// Theme toggle
+const storedTheme = localStorage.getItem('theme');
+const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+function setTheme(theme) {
+  root.setAttribute('data-theme', theme);
+  localStorage.setItem('theme', theme);
+  if (themeToggle) {
+    themeToggle.textContent = theme === 'dark' ? '🌙' : '☀️';
+    themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+}
+setTheme(storedTheme || (prefersDark ? 'dark' : 'light'));
+themeToggle?.addEventListener('click', () => {
+  const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  setTheme(next);
+});
+
+// Compare slider - use clip-path to avoid resizing the processed video
+function updateSlider(val) {
+  if (!compareOverlay) return;
+  const pct = Math.min(100, Math.max(0, Number(val) || 0));
+  // Use clip-path instead of width so video doesn't resize
+  compareOverlay.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+  if (compareDivider) {
+    compareDivider.style.left = `${pct}%`;
+  }
+}
+if (compareSlider) {
+  updateSlider(compareSlider.value || 55);
+  compareSlider.addEventListener('input', (e) => updateSlider(e.target.value));
+}
+
+function pauseBoth() {
+  isPlaying = false;
+  playToggle?.setAttribute('aria-label', 'Play preview');
+  if (playToggle) playToggle.textContent = '▶';
+  videoOriginal?.pause();
+  videoProcessed?.pause();
+}
+
+async function playBoth() {
+  if (!videoOriginal || !videoProcessed) return;
+  try {
+    // Play processed video with audio, keep original muted for visual sync
+    videoProcessed.muted = false;
+    videoOriginal.muted = true;
+    videoOriginal.currentTime = videoProcessed.currentTime;
+    await videoProcessed.play();
+    await videoOriginal.play();
+    isPlaying = true;
+    playToggle?.setAttribute('aria-label', 'Pause preview');
+    if (playToggle) playToggle.textContent = '❚❚';
+  } catch (e) {
+    // Autoplay might be blocked, fallback to manual play
+    isPlaying = false;
+  }
+}
+
+function syncCurrentTime() {
+  if (!videoOriginal || !videoProcessed) return;
+  const delta = Math.abs(videoOriginal.currentTime - videoProcessed.currentTime);
+  if (delta > 0.12) {
+    videoProcessed.currentTime = videoOriginal.currentTime;
+  }
+}
+
+videoOriginal?.addEventListener('timeupdate', syncCurrentTime);
+videoOriginal?.addEventListener('ended', pauseBoth);
+videoProcessed?.addEventListener('ended', pauseBoth);
+
+playToggle?.addEventListener('click', () => {
+  if (!videoOriginal?.src || !videoProcessed?.src) return;
+  if (isPlaying) pauseBoth();
+  else playBoth();
+});
 
 // Dropzone
 ['dragenter', 'dragover'].forEach(evt => dropzone.addEventListener(evt, e => {
@@ -46,57 +125,20 @@ dropzone.addEventListener('drop', (e) => {
   const files = e.dataTransfer.files;
   if (!files || !files.length) return;
   fileInput.files = files;
-  updateUploadState();
+  handleFileSelect();
 });
 
 browseBtn.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', updateUploadState);
+fileInput.addEventListener('change', handleFileSelect);
 
-function updateUploadState() {
-  if (fileInput.files && fileInput.files[0]) {
-    uploadBtn.disabled = false;
-    uploadStatus.textContent = fileInput.files[0].name;
-  } else {
-    uploadBtn.disabled = true;
-    uploadStatus.textContent = '';
-  }
-}
-
-// Canvas size to video
-function fitCanvasToVideo() {
-  const w = video.clientWidth || video.videoWidth;
-  const h = video.clientHeight || video.videoHeight;
-  if (!w || !h) return;
-  overlay.width = w;
-  overlay.height = h;
-  overlay.style.width = w + 'px';
-  overlay.style.height = h + 'px';
-  overlay.style.left = '0px';
-  overlay.style.top = '0px';
-}
-
-function drawOverlay() {
-  const ctx = overlay.getContext('2d');
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  if (!roi) return;
-  ctx.strokeStyle = '#22c55e';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6, 4]);
-  const scaleX = overlay.width / video.videoWidth;
-  const scaleY = overlay.height / video.videoHeight;
-  ctx.strokeRect(roi.x * scaleX, roi.y * scaleY, roi.width * scaleX, roi.height * scaleY);
-}
-
-window.addEventListener('resize', () => { fitCanvasToVideo(); drawOverlay(); });
-video.addEventListener('loadedmetadata', () => { fitCanvasToVideo(); overlayHelp.style.display = 'block'; processBtn.disabled = !uploadedFilename; });
-
-// Upload with progress (XHR for progress events)
-uploadBtn.addEventListener('click', async () => {
+async function handleFileSelect() {
   const file = fileInput.files && fileInput.files[0];
-  if (!file) { toast('Select a video first', 'error'); return; }
+  if (!file) return;
+
+  uploadStatus.textContent = `Selected: ${file.name}`;
   uploadProgress.hidden = false;
   uploadProgressBar.style.width = '0%';
-  uploadBtn.disabled = true;
+  processBtn.disabled = true;
 
   const form = new FormData();
   form.append('video', file);
@@ -106,16 +148,18 @@ uploadBtn.addEventListener('click', async () => {
       uploadProgressBar.style.width = `${pct}%`;
     });
     uploadedFilename = data.filename;
-    video.src = data.videoUrl;
-    toast('Uploaded successfully');
+    originalVideoUrl = data.videoUrl;
+    uploadStatus.textContent = `✓ ${file.name} uploaded`;
+    toast('Video uploaded successfully!');
     processBtn.disabled = false;
   } catch (e) {
+    uploadStatus.textContent = 'Upload failed';
     toast(e.message || 'Upload failed', 'error');
+    processBtn.disabled = true;
   } finally {
-    uploadBtn.disabled = false;
     setTimeout(() => { uploadProgress.hidden = true; }, 500);
   }
-});
+}
 
 function uploadWithProgress(url, form, onProgress) {
   return new Promise((resolve, reject) => {
@@ -141,73 +185,77 @@ function uploadWithProgress(url, form, onProgress) {
   });
 }
 
-// ROI interactions
-function getMousePos(evt) {
-  const rect = overlay.getBoundingClientRect();
-  return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
-}
-
-overlay.addEventListener('mousedown', (e) => {
-  if (!video.videoWidth) return;
-  isDrawing = true;
-  const p = getMousePos(e);
-  startX = p.x; startY = p.y;
-  roi = { x: 0, y: 0, width: 0, height: 0 };
-  overlayHelp.style.display = 'none';
-});
-
-overlay.addEventListener('mousemove', (e) => {
-  if (!isDrawing) return;
-  const p = getMousePos(e);
-  const x = Math.min(p.x, startX);
-  const y = Math.min(p.y, startY);
-  const w = Math.abs(p.x - startX);
-  const h = Math.abs(p.y - startY);
-  const scaleX = video.videoWidth / overlay.width;
-  const scaleY = video.videoHeight / overlay.height;
-  roi = {
-    x: Math.round(x * scaleX),
-    y: Math.round(y * scaleY),
-    width: Math.round(w * scaleX),
-    height: Math.round(h * scaleY),
-  };
-  drawOverlay();
-});
-
-overlay.addEventListener('mouseup', () => { isDrawing = false; });
-clearRoiBtn.addEventListener('click', () => { roi = null; drawOverlay(); overlayHelp.style.display = 'block'; });
-
 // Process
 processBtn.addEventListener('click', async () => {
-  if (!uploadedFilename) { toast('Upload a video first', 'error'); return; }
-  if (!roi || roi.width <= 0 || roi.height <= 0) { toast('Draw a rectangle over the watermark', 'error'); return; }
+  if (!uploadedFilename) { 
+    toast('Please upload a video first', 'error'); 
+    return; 
+  }
 
-  processStatus.textContent = 'Processing...';
+  processStatus.textContent = 'Processing... This may take a few minutes.';
   processProgress.hidden = false;
-  downloadLink.innerHTML = '';
   processBtn.disabled = true;
+  comparisonCard.hidden = true;
 
   try {
     const res = await fetch('/process', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: uploadedFilename, roi, method: methodSelect.value, quality: qualitySelect.value || 'ultra' })
+      body: JSON.stringify({ 
+        filename: uploadedFilename, 
+        method: methodSelect.value, 
+        quality: qualitySelect.value || 'fast' 
+      })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Processing failed');
-    processStatus.textContent = 'Done';
-    const a = document.createElement('a');
-    a.href = data.downloadUrl;
-    a.textContent = 'Download processed video';
-    a.className = 'btn';
-    a.download = data.outputFilename;
-    downloadLink.appendChild(a);
-    toast('Processing complete');
+    
+    processStatus.textContent = '✓ Processing complete!';
+    
+    // Hide upload card, show comparison
+    document.getElementById('uploadCard').hidden = true;
+    
+    // Show before/after comparison
+    videoOriginal.src = originalVideoUrl;
+    videoProcessed.src = data.videoUrl;
+    videoOriginal.load();
+    videoProcessed.load();
+    videoProcessed.muted = false;
+    videoOriginal.muted = true;
+    videoOriginal.currentTime = 0;
+    videoProcessed.currentTime = 0;
+    downloadLink.href = data.downloadUrl;
+    downloadLink.download = data.outputFilename;
+    downloadLink.hidden = false;
+    comparisonCard.hidden = false;
+    pauseBoth();
+    updateSlider(compareSlider?.value || 100);
+    
+    toast('Watermark removed successfully! ✨', 'success', 4000);
   } catch (e) {
-    processStatus.textContent = 'Error';
-    toast(e.message || 'Processing failed', 'error');
+    processStatus.textContent = '✗ Processing failed';
+    toast(e.message || 'Processing failed', 'error', 5000);
   } finally {
     processProgress.hidden = true;
     processBtn.disabled = false;
+  }
+});
+
+// Handle "New Video" button
+document.getElementById('newVideoBtn').addEventListener('click', () => {
+  comparisonCard.hidden = true;
+  document.getElementById('uploadCard').hidden = false;
+  fileInput.value = '';
+  uploadStatus.textContent = '';
+  videoOriginal.src = '';
+  videoProcessed.src = '';
+  pauseBoth();
+  uploadedFilename = null;
+  processStatus.textContent = '';
+  processBtn.disabled = true;
+  downloadLink.hidden = true;
+  if (compareSlider) {
+    compareSlider.value = 100;
+    updateSlider(compareSlider.value);
   }
 });

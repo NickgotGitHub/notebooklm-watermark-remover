@@ -1,95 +1,151 @@
 <!doctype html>
-<html>
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Watermark Remover</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
-  <header class="site-header">
-    <div class="container">
+  <div class="background">
+    <div class="bg-gradient"></div>
+    <div class="bg-glow glow-a"></div>
+    <div class="bg-glow glow-b"></div>
+    <div class="bg-grid"></div>
+  </div>
+
+  <div class="page">
+    <header class="topbar container glass">
       <div class="brand">
-        <div class="logo">WM</div>
+        <div class="logo">VWR</div>
         <div class="titles">
-          <h1>Watermark Remover</h1>
-          <p class="subtitle">Upload, select ROI, and remove watermarks with high quality.</p>
+          <p class="eyebrow">NotebookLM companion</p>
+          <h1>Video Watermark Remover</h1>
         </div>
       </div>
-    </div>
-  </header>
+      <div class="top-actions">
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">🌙</button>
+        <a class="icon-btn ghost" href="https://notebooklm.google.com/" target="_blank" rel="noreferrer" aria-label="Vercel docs">↗</a>
+      </div>
+    </header>
 
-  <main class="container grid">
-    <section class="card" id="uploadCard">
-      <h2>1. Upload Video</h2>
-      <div id="dropzone" class="dropzone">
-        <input type="file" id="fileInput" accept="video/*" hidden />
-        <div class="dropzone-content">
-          <div class="drop-icon">⬆️</div>
-          <p><strong>Drag & drop</strong> a video here, or</p>
-          <button id="browseBtn" class="btn">Browse</button>
-          <p class="hint">Supported: MP4, MOV, WEBM, MKV, AVI</p>
+    <main class="container main-shell">
+      <section class="panel hero" id="uploadCard">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Step 1 · Upload</p>
+            <h2>Glass-smooth cleanup, right on your screen</h2>
+            <p class="lede">Drop your NotebookLM exports, preview in one viewport, and ship a logo-polished cut in minutes.</p>
+          </div>
+          <div class="chip-row">
+            <span class="chip glow">Auto-detect watermark</span>
+          </div>
         </div>
-      </div>
-      <div class="progress" id="uploadProgress" hidden>
-        <div class="progress-bar" id="uploadProgressBar"></div>
-      </div>
-      <div class="status" id="uploadStatus"></div>
-      <div class="actions">
-        <button id="uploadBtn" class="btn primary" disabled>Upload</button>
-      </div>
-    </section>
 
-    <section class="card span-2" id="editorCard">
-      <h2>2. Select Watermark Area</h2>
-      <div class="video-wrapper">
-        <video id="video" controls></video>
-        <canvas id="overlay"></canvas>
-        <div class="overlay-help" id="overlayHelp">Click and drag on the video to draw the rectangle over the watermark.</div>
-      </div>
-      <div class="controls">
-        <div class="control-group">
-          <label>Method
-            <select id="method">
-              <option value="telea">Telea (fast, good)</option>
-              <option value="ns" selected>Navier-Stokes (slower)</option>
-            </select>
-          </label>
+        <div class="upload-layout">
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="fileInput" accept="video/*" hidden />
+            <div class="drop-inner">
+              <div class="drop-icon">⬆️</div>
+              <div class="drop-text">
+                <h3>Drop your video</h3>
+                <p>MP4, MOV, WEBM, MKV, AVI • up to 2GB</p>
+              </div>
+              <div class="drop-actions">
+                <button id="browseBtn" class="btn primary">Browse files</button>
+                <p class="hint">Drag & drop or browse. We’ll handle the watermark.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="side-card">
+            <div class="control-grid">
+              <label>Method
+                <select id="method">
+                  <option value="telea" selected>Telea (fast, good)</option>
+                  <option value="ns">Navier-Stokes (slower, better)</option>
+                </select>
+              </label>
+              <label>Quality
+                <select id="quality">
+                  <option value="fast" selected>Fast</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="better">Better</option>
+                  <option value="best">Best</option>
+                  <option value="ultra">Ultra (lossless)</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="status-line">
+              <div class="status" id="uploadStatus"></div>
+            </div>
+            <div class="progress-bar" id="uploadProgress" hidden>
+              <div class="progress-fill" id="uploadProgressBar"></div>
+            </div>
+
+            <button id="processBtn" class="btn primary large" disabled>
+              <span class="btn-icon">⚡</span>
+              Remove watermark & add logo
+            </button>
+
+            <div class="progress-bar indeterminate" id="processProgress" hidden>
+              <div class="progress-indicator"></div>
+            </div>
+            <div class="status" id="processStatus"></div>
+          </div>
         </div>
-        <div class="control-group">
-          <label>Quality
-            <select id="quality">
-              <option value="fast">Fast</option>
-              <option value="balanced">Balanced</option>
-              <option value="better">Better</option>
-              <option value="best">Best</option>
-              <option value="ultra" selected>Ultra (lossless)</option>
-            </select>
-          </label>
+      </section>
+
+      <section class="panel hero result" id="comparisonCard" hidden>
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow success">Step 2 · Preview</p>
+            <h2>Slide to compare before / after</h2>
+            <p class="lede">Glass overlays, synced playback, and a single downloadable cut.</p>
+          </div>
+          <div class="chip-row">
+            <button id="newVideoBtn" class="btn ghost small">
+              <span class="btn-icon">↺</span> New video
+            </button>
+            <a id="downloadLink" class="btn primary small" hidden>
+              <span class="btn-icon">⬇️</span> Download
+            </a>
+          </div>
         </div>
-        <div class="spacer"></div>
-        <button id="clearRoi" class="btn">Clear ROI</button>
-        <button id="processBtn" class="btn primary" disabled>Remove Watermark</button>
-      </div>
-      <div class="progress" id="processProgress" hidden>
-        <div class="progress-indeterminate"></div>
-      </div>
-      <div class="status" id="processStatus"></div>
-      <div id="downloadLink" class="download"></div>
-    </section>
-  </main>
+
+        <div class="compare-wrap">
+          <div class="compare-meta">
+            <span class="chip ghost">Original</span>
+            <span class="chip glow">Clean + logo</span>
+            <button id="playToggle" class="icon-btn primary subtle">▶</button>
+          </div>
+
+          <div class="compare-frame">
+            <video id="videoOriginal" class="video-base" playsinline muted loop></video>
+            <div class="compare-overlay" id="compareOverlay">
+              <video id="videoProcessed" class="video-top" playsinline muted loop></video>
+              <div class="compare-divider" id="compareDivider"></div>
+            </div>
+            <div class="compare-slider">
+              <input type="range" id="compareSlider" min="0" max="100" value="100" aria-label="Drag to compare">
+            </div>
+            <div class="compare-hint">Drag left to reveal the original video</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer container">
+      <p>Processed locally with OpenCV + FFmpeg. Automatically detects the NotebookLM watermark and swaps in your logo.</p>
+    </footer>
+  </div>
 
   <div id="toasts" class="toasts"></div>
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>Processed locally with OpenCV + FFmpeg. Your originals are not modified.</p>
-    </div>
-  </footer>
-
-  <script src="/static/app.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
